@@ -20,21 +20,15 @@ class LipSyncDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
         
-        # Аудио признаки: (features, time) -> (time, features)
         audio = torch.FloatTensor(np.array(sample['audio_features'])).T
-        
-        # Визуальные признаки: (time, points, coords)
         visual = torch.FloatTensor(np.array(sample['visual_features']))
         
-        # Усредняем визуальные признаки по времени для каждого образца
-        # Вместо предсказания всей временной последовательности, предсказываем среднее
-        visual_mean = visual.mean(dim=0)  # (points, coords)
-        visual_flat = visual_mean.view(-1)  # (points * coords)
+        visual_mean = visual.mean(dim=0)
+        visual_flat = visual_mean.view(-1)
         
         return audio, visual_flat
 
 def collate_fn(batch):
-    """Функция для обработки батчей с разной длительностью"""
     audio_list = []
     visual_list = []
     
@@ -42,7 +36,6 @@ def collate_fn(batch):
         audio_list.append(audio)
         visual_list.append(visual)
     
-    # Паддинг аудио до максимальной длины в батче
     max_len = max(a.shape[0] for a in audio_list)
     padded_audio = []
     
@@ -55,7 +48,6 @@ def collate_fn(batch):
             padded = audio
         padded_audio.append(padded)
     
-    # Визуальные признаки уже имеют одинаковую размерность
     visual_tensor = torch.stack(visual_list)
     
     return torch.stack(padded_audio), visual_tensor
@@ -64,7 +56,6 @@ class LipSyncModel(nn.Module):
     def __init__(self, input_dim=13, hidden_dim=128, output_dim=136):  # 68*2=136
         super(LipSyncModel, self).__init__()
         
-        # Проекция входных признаков
         self.input_projection = nn.Linear(input_dim, hidden_dim)
         
         self.lstm = nn.LSTM(
@@ -76,7 +67,6 @@ class LipSyncModel(nn.Module):
             bidirectional=True
         )
         
-        # Выходные слои
         self.fc1 = nn.Linear(hidden_dim * 2, 256)
         self.bn1 = nn.BatchNorm1d(256)
         self.relu = nn.ReLU()
@@ -84,18 +74,13 @@ class LipSyncModel(nn.Module):
         self.fc2 = nn.Linear(256, output_dim)
         
     def forward(self, x):
-        # x shape: (batch, time, features)
         batch_size = x.size(0)
         
-        # Проекция входных признаков
         x = self.input_projection(x)
         
-        # LSTM
         lstm_out, (hidden, cell) = self.lstm(x)
         
-        # Используем среднее по времени вместо последнего скрытого состояния
-        # Это дает более стабильные результаты
-        lstm_mean = lstm_out.mean(dim=1)  # (batch, hidden_dim * 2)
+        lstm_mean = lstm_out.mean(dim=1)
         
         x = self.fc1(lstm_mean)
         x = self.bn1(x)
@@ -112,30 +97,16 @@ class ModelTrainer:
         print(f"Используется устройство: {self.device}")
         
     def load_data(self):
-        """Загрузка подготовленных данных"""
+        print("Загрузка подготовленных данных")
         data_path = self.data_dir / 'processed_data.json'
-        
-        if not data_path.exists():
-            print("Данные не найдены. Сначала запустите data_preparation.py")
-            return None
         
         with open(data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        print(f"Загружено {len(data['samples'])} образцов")
-        
-        # Проверяем размерности
-        if data['samples']:
-            sample = data['samples'][0]
-            audio_shape = np.array(sample['audio_features']).shape
-            visual_shape = np.array(sample['visual_features']).shape
-            print(f"Пример размерности аудио: {audio_shape}")
-            print(f"Пример размерности визуальных признаков: {visual_shape}")
-        
         return data['samples']
     
     def prepare_dataloaders(self, samples, batch_size=8, train_split=0.8):
-        """Подготовка даталоадеров"""
+        print("Подготовка даталоадеров")
         if not samples:
             return None, None
         
@@ -163,17 +134,12 @@ class ModelTrainer:
             drop_last=True
         )
         
-        print(f"\n📊 Разделение данных:")
         print(f"   Обучающая выборка: {len(train_samples)} образцов")
         print(f"   Валидационная выборка: {len(val_samples)} образцов")
-        print(f"   Размер батча: {batch_size}")
-        print(f"   Количество батчей в обучении: {len(train_loader)}")
-        print(f"   Количество батчей в валидации: {len(val_loader)}")
         
         return train_loader, val_loader
     
     def train_model(self, model, train_loader, val_loader, epochs=30):
-        """Обучение модели"""
         criterion = nn.MSELoss()
         optimizer = optim.Adam(model.parameters(), lr=0.001)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -189,7 +155,6 @@ class ModelTrainer:
         best_val_loss = float('inf')
         
         for epoch in range(epochs):
-            # Обучение
             model.train()
             train_loss = 0.0
             train_batches = 0
@@ -203,7 +168,6 @@ class ModelTrainer:
                 loss = criterion(output, visual)
                 loss.backward()
                 
-                # Градиентное клиппинг
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 optimizer.step()
@@ -217,7 +181,6 @@ class ModelTrainer:
             avg_train_loss = train_loss / max(train_batches, 1)
             train_losses.append(avg_train_loss)
             
-            # Валидация
             model.eval()
             val_loss = 0.0
             val_batches = 0
@@ -234,36 +197,22 @@ class ModelTrainer:
             avg_val_loss = val_loss / max(val_batches, 1)
             val_losses.append(avg_val_loss)
             
-            # Сохраняем лучшую модель
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 self.save_model(model, 'best_model.pth')
                 print(f"   ✨ Новая лучшая модель! Val Loss: {avg_val_loss:.4f}")
             
             scheduler.step(avg_val_loss)
-            
-            # Вывод каждую эпоху
-            print(f"\n📈 Epoch [{epoch+1}/{epochs}]")
-            print(f"   Train Loss: {avg_train_loss:.4f}")
-            print(f"   Val Loss: {avg_val_loss:.4f}")
-            print(f"   Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
-            print("-" * 50)
         
         print("\n✅ Обучение завершено!")
         print(f"   Лучшая валидационная loss: {best_val_loss:.4f}")
         
-        # Визуализация
         self.plot_losses(train_losses, val_losses)
         self.plot_training_curves(train_losses, val_losses)
 
         return model
     
     def plot_losses(self, train_losses, val_losses):
-        """Визуализация потерь"""
-        if len(train_losses) == 0:
-            print("Нет данных для визуализации")
-            return
-            
         plt.figure(figsize=(12, 5))
         
         plt.subplot(1, 2, 1)
@@ -291,10 +240,8 @@ class ModelTrainer:
         print(f"\n📊 Графики сохранены: {self.data_dir / 'training_curves.png'}")
         
     def plot_training_curves(self, train_losses, val_losses):
-        """Построение графика обучения"""
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Основной график
         axes[0].plot(train_losses, label='Train Loss', linewidth=2, color='blue')
         axes[0].plot(val_losses, label='Validation Loss', linewidth=2, color='red')
         axes[0].set_xlabel('Epoch', fontsize=12)
@@ -303,7 +250,6 @@ class ModelTrainer:
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
-        # Логарифмическая шкала
         axes[1].semilogy(train_losses, label='Train Loss', linewidth=2, color='blue')
         axes[1].semilogy(val_losses, label='Validation Loss', linewidth=2, color='red')
         axes[1].set_xlabel('Epoch', fontsize=12)
@@ -312,7 +258,6 @@ class ModelTrainer:
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
         
-        # Добавляем информацию о лучших значениях
         best_val_epoch = np.argmin(val_losses)
         best_val_loss = min(val_losses)
         axes[0].axvline(x=best_val_epoch, color='green', linestyle='--', alpha=0.5)
@@ -324,7 +269,6 @@ class ModelTrainer:
         plt.show()
         print(f"\n📊 График обучения сохранен: {self.models_dir / 'training_curves.png'}")
         
-        # Сохраняем значения потерь
         losses_data = {
             'train_losses': train_losses,
             'val_losses': val_losses,
@@ -337,7 +281,6 @@ class ModelTrainer:
         print(f"📊 Значения потерь сохранены: {self.models_dir / 'losses.json'}")
 
     def save_model(self, model, path='model.pth'):
-        """Сохранение модели"""
         model_path = self.data_dir / path
         torch.save({
             'model_state_dict': model.state_dict(),
@@ -352,7 +295,6 @@ class ModelTrainer:
         return model_path
     
     def load_model(self, model, path='best_model.pth'):
-        """Загрузка модели"""
         model_path = self.data_dir / path
         if model_path.exists():
             checkpoint = torch.load(model_path, map_location=self.device)
@@ -362,68 +304,9 @@ class ModelTrainer:
         else:
             print(f"⚠️ Модель не найдена: {model_path}")
             return False
-    
-    def evaluate_model(self, model, test_loader):
-        """Оценка модели на тестовых данных"""
-        if len(test_loader) == 0:
-            print("Нет данных для оценки")
-            return float('inf')
-            
-        model.eval()
-        total_loss = 0.0
-        total_samples = 0
-        criterion = nn.MSELoss()
-        
-        with torch.no_grad():
-            for audio, visual in test_loader:
-                audio = audio.to(self.device)
-                visual = visual.to(self.device)
-                output = model(audio)
-                loss = criterion(output, visual)
-                total_loss += loss.item() * audio.size(0)
-                total_samples += audio.size(0)
-        
-        avg_loss = total_loss / total_samples if total_samples > 0 else float('inf')
-        rmse = np.sqrt(avg_loss)
-        
-        print(f"\n📊 Оценка модели:")
-        print(f"   Средняя loss на тесте: {avg_loss:.4f}")
-        print(f"   RMSE: {rmse:.4f}")
-        print(f"   Протестировано образцов: {total_samples}")
-        
-        return avg_loss
-
-def test_model_forward():
-    """Тестирование forward pass модели"""
-    print("\n🔧 Тестирование модели...")
-    model = LipSyncModel()
-    
-    # Создаем тестовый батч
-    batch_size = 2
-    time_steps = 50
-    features = 13
-    
-    test_input = torch.randn(batch_size, time_steps, features)
-    print(f"Тестовый вход: {test_input.shape}")
-    
-    output = model(test_input)
-    print(f"Выход модели: {output.shape}")
-    print(f"Ожидаемый выход: ({batch_size}, 136)")
-    
-    if output.shape == (batch_size, 136):
-        print("✅ Forward pass успешен!")
-        return True
-    else:
-        print("❌ Forward pass не прошел проверку размерностей")
-        return False
 
 if __name__ == "__main__":
     print("🚀 Запуск обучения модели...")
-    
-    # Тестирование модели
-    if not test_model_forward():
-        print("Остановка из-за ошибки в forward pass")
-        exit(1)
     
     trainer = ModelTrainer()
     samples = trainer.load_data()
@@ -433,27 +316,10 @@ if __name__ == "__main__":
         
         if train_loader and val_loader and len(train_loader) > 0 and len(val_loader) > 0:
             model = LipSyncModel().to(trainer.device)
-            print(f"\n📐 Архитектура модели:")
-            print(f"   Входной размер: 13 MFCC коэффициентов")
-            print(f"   Скрытое состояние LSTM: 128")
-            print(f"   Выходной размер: 136 (68 точек × 2 координаты)")
-            print(f"   Количество параметров: {sum(p.numel() for p in model.parameters()):,}")
-            
-            # Обучение
             trained_model = trainer.train_model(model, train_loader, val_loader, epochs=30)
-            
-            # Сохраняем финальную модель
             trainer.save_model(trained_model, 'final_model.pth')
-            
-            # Оценка
-            trainer.evaluate_model(trained_model, val_loader)
-            
             print("\n🎉 Обучение успешно завершено!")
         else:
             print("❌ Не удалось подготовить даталоадеры")
-            if train_loader:
-                print(f"   Количество батчей в train_loader: {len(train_loader)}")
-            if val_loader:
-                print(f"   Количество батчей в val_loader: {len(val_loader)}")
     else:
         print("❌ Нет данных для обучения. Сначала запустите data_preparation.py")
