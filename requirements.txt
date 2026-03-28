@@ -14,3 +14,16 @@ flask>=2.3.0
 requests>=2.31.0
 openpyxl>=3.1.0
 flask_cors
+albumentations
+fastapi
+torchaudio
+uvicorn
+librosa
+soundfile
+imageio
+gdown
+datasets
+face_recognition
+psycopg2
+sqlalchemy
+seaborn

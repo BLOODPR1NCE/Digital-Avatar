@@ -1,344 +1,459 @@
-# model_training.py
+#model_training
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as transforms
 import numpy as np
-import os
-import cv2
-from PIL import Image
-from tqdm import tqdm
 import json
+from pathlib import Path
 import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
 
-class AvatarDataset(Dataset):
-    """Датасет для обучения модели аватара"""
-    def __init__(self, data_dir, transform=None, img_size=128):
-        self.data_dir = data_dir
-        self.img_size = img_size
+class LipSyncDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
         
-        # Загрузка атрибутов
-        attrs_path = f'{data_dir}/train_attributes.npy'
-        if os.path.exists(attrs_path):
-            self.attributes = np.load(attrs_path)
-            print(f"Загружено атрибутов: {self.attributes.shape}")
-        else:
-            raise FileNotFoundError(f"Файл {attrs_path} не найден. Сначала запустите data_preparation.py")
-        
-        # Список изображений
-        images_dir = f'{data_dir}/images'
-        self.images = []
-        if os.path.exists(images_dir):
-            self.images = [f for f in os.listdir(images_dir) if f.endswith('.jpg')]
-            self.images = sorted(self.images)[:len(self.attributes)]
-        
-        print(f"Загружено изображений: {len(self.images)}")
-        
-        self.transform = transform or transforms.Compose([
-            transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
-    
     def __len__(self):
-        return len(self.images)
+        return len(self.data)
     
     def __getitem__(self, idx):
-        img_path = os.path.join(self.data_dir, 'images', self.images[idx])
+        sample = self.data[idx]
         
-        try:
-            image = Image.open(img_path).convert('RGB')
-            image = self.transform(image)
-        except Exception as e:
-            print(f"Ошибка загрузки {img_path}: {e}")
-            image = torch.randn(3, self.img_size, self.img_size)
+        # Аудио признаки: (features, time) -> (time, features)
+        audio = torch.FloatTensor(np.array(sample['audio_features'])).T
         
-        attrs = torch.FloatTensor(self.attributes[idx])
+        # Визуальные признаки: (time, points, coords)
+        visual = torch.FloatTensor(np.array(sample['visual_features']))
         
-        return image, attrs
+        # Усредняем визуальные признаки по времени для каждого образца
+        # Вместо предсказания всей временной последовательности, предсказываем среднее
+        visual_mean = visual.mean(dim=0)  # (points, coords)
+        visual_flat = visual_mean.view(-1)  # (points * coords)
+        
+        return audio, visual_flat
 
-class Generator(nn.Module):
-    """Генератор изображений"""
-    def __init__(self, latent_dim=100, n_attributes=40, img_size=128):
-        super(Generator, self).__init__()
-        
-        self.latent_dim = latent_dim
-        self.n_attributes = n_attributes
-        
-        # Начальный размер: 4x4
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim + n_attributes, 512 * 4 * 4),
-            nn.BatchNorm1d(512 * 4 * 4),
-            nn.ReLU(True)
-        )
-        
-        self.deconv = nn.Sequential(
-            # 4x4 -> 8x8
-            nn.ConvTranspose2d(512, 256, 4, 2, 1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(True),
-            
-            # 8x8 -> 16x16
-            nn.ConvTranspose2d(256, 128, 4, 2, 1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(True),
-            
-            # 16x16 -> 32x32
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(True),
-            
-            # 32x32 -> 64x64
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(True),
-            
-            # 64x64 -> 128x128
-            nn.ConvTranspose2d(32, 3, 4, 2, 1),
-            nn.Tanh()
-        )
+def collate_fn(batch):
+    """Функция для обработки батчей с разной длительностью"""
+    audio_list = []
+    visual_list = []
     
-    def forward(self, z, attrs):
-        # Конкатенация шума и атрибутов
-        combined = torch.cat([z, attrs], dim=1)
-        x = self.fc(combined)
-        x = x.view(-1, 512, 4, 4)
-        x = self.deconv(x)
+    for audio, visual in batch:
+        audio_list.append(audio)
+        visual_list.append(visual)
+    
+    # Паддинг аудио до максимальной длины в батче
+    max_len = max(a.shape[0] for a in audio_list)
+    padded_audio = []
+    
+    for audio in audio_list:
+        if audio.shape[0] < max_len:
+            pad_size = max_len - audio.shape[0]
+            padding = torch.zeros(pad_size, audio.shape[1])
+            padded = torch.cat([audio, padding], dim=0)
+        else:
+            padded = audio
+        padded_audio.append(padded)
+    
+    # Визуальные признаки уже имеют одинаковую размерность
+    visual_tensor = torch.stack(visual_list)
+    
+    return torch.stack(padded_audio), visual_tensor
+
+class LipSyncModel(nn.Module):
+    def __init__(self, input_dim=13, hidden_dim=128, output_dim=136):  # 68*2=136
+        super(LipSyncModel, self).__init__()
+        
+        # Проекция входных признаков
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=2,
+            batch_first=True,
+            dropout=0.2,
+            bidirectional=True
+        )
+        
+        # Выходные слои
+        self.fc1 = nn.Linear(hidden_dim * 2, 256)
+        self.bn1 = nn.BatchNorm1d(256)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
+        self.fc2 = nn.Linear(256, output_dim)
+        
+    def forward(self, x):
+        # x shape: (batch, time, features)
+        batch_size = x.size(0)
+        
+        # Проекция входных признаков
+        x = self.input_projection(x)
+        
+        # LSTM
+        lstm_out, (hidden, cell) = self.lstm(x)
+        
+        # Используем среднее по времени вместо последнего скрытого состояния
+        # Это дает более стабильные результаты
+        lstm_mean = lstm_out.mean(dim=1)  # (batch, hidden_dim * 2)
+        
+        x = self.fc1(lstm_mean)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        
         return x
 
-class Discriminator(nn.Module):
-    """Дискриминатор"""
-    def __init__(self, n_attributes=40, img_size=128):
-        super(Discriminator, self).__init__()
+class ModelTrainer:
+    def __init__(self, data_dir="./data"):
+        self.data_dir = Path(data_dir)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Используется устройство: {self.device}")
         
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 64, 4, 2, 1),
-            nn.LeakyReLU(0.2, True),
-            
-            nn.Conv2d(64, 128, 4, 2, 1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, True),
-            
-            nn.Conv2d(128, 256, 4, 2, 1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.2, True),
-            
-            nn.Conv2d(256, 512, 4, 2, 1),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(0.2, True),
+    def load_data(self):
+        """Загрузка подготовленных данных"""
+        data_path = self.data_dir / 'processed_data.json'
+        
+        if not data_path.exists():
+            print("Данные не найдены. Сначала запустите data_preparation.py")
+            return None
+        
+        with open(data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        print(f"Загружено {len(data['samples'])} образцов")
+        
+        # Проверяем размерности
+        if data['samples']:
+            sample = data['samples'][0]
+            audio_shape = np.array(sample['audio_features']).shape
+            visual_shape = np.array(sample['visual_features']).shape
+            print(f"Пример размерности аудио: {audio_shape}")
+            print(f"Пример размерности визуальных признаков: {visual_shape}")
+        
+        return data['samples']
+    
+    def prepare_dataloaders(self, samples, batch_size=8, train_split=0.8):
+        """Подготовка даталоадеров"""
+        if not samples:
+            return None, None
+        
+        train_size = int(len(samples) * train_split)
+        val_size = len(samples) - train_size
+        
+        train_samples = samples[:train_size]
+        val_samples = samples[train_size:]
+        
+        train_dataset = LipSyncDataset(train_samples)
+        val_dataset = LipSyncDataset(val_samples)
+        
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            shuffle=True,
+            collate_fn=collate_fn,
+            drop_last=True
+        )
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            shuffle=False,
+            collate_fn=collate_fn,
+            drop_last=True
         )
         
-        self.fc = nn.Sequential(
-            nn.Linear(512 * 8 * 8 + n_attributes, 512),
-            nn.LeakyReLU(0.2, True),
-            nn.Linear(512, 256),
-            nn.LeakyReLU(0.2, True),
-            nn.Linear(256, 1),
-            nn.Sigmoid()
+        print(f"\n📊 Разделение данных:")
+        print(f"   Обучающая выборка: {len(train_samples)} образцов")
+        print(f"   Валидационная выборка: {len(val_samples)} образцов")
+        print(f"   Размер батча: {batch_size}")
+        print(f"   Количество батчей в обучении: {len(train_loader)}")
+        print(f"   Количество батчей в валидации: {len(val_loader)}")
+        
+        return train_loader, val_loader
+    
+    def train_model(self, model, train_loader, val_loader, epochs=30):
+        """Обучение модели"""
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', patience=5, factor=0.5
         )
-    
-    def forward(self, img, attrs):
-        features = self.conv(img)
-        features = features.view(features.size(0), -1)
-        combined = torch.cat([features, attrs], dim=1)
-        validity = self.fc(combined)
-        return validity
-
-def train_model():
-    """Обучение GAN модели"""
-    print("=" * 60)
-    print("ОБУЧЕНИЕ МОДЕЛИ ГЕНЕРАЦИИ АВАТАРА")
-    print("=" * 60)
-    
-    # Параметры
-    batch_size = 32
-    epochs = 20
-    lr = 0.0002
-    latent_dim = 100
-    img_size = 128
-    n_attributes = 40
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    print(f"Используемое устройство: {device}")
-    
-    # Загрузка данных
-    dataset = AvatarDataset('processed_data', img_size=img_size)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
-                           num_workers=0, drop_last=True)
-    
-    print(f"Количество батчей: {len(dataloader)}")
-    
-    # Инициализация моделей
-    generator = Generator(latent_dim, n_attributes, img_size).to(device)
-    discriminator = Discriminator(n_attributes, img_size).to(device)
-    
-    # Оптимизаторы
-    g_optimizer = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
-    
-    # Функции потерь
-    adversarial_loss = nn.BCELoss()
-    
-    # Создание директории
-    os.makedirs('models', exist_ok=True)
-    os.makedirs('generated_samples', exist_ok=True)
-    
-    # Обучение
-    for epoch in range(epochs):
-        generator.train()
-        discriminator.train()
         
-        epoch_g_loss = 0
-        epoch_d_loss = 0
+        train_losses = []
+        val_losses = []
         
-        pbar = tqdm(dataloader, desc=f'Epoch {epoch+1}/{epochs}')
+        print("\n🚀 Начало обучения модели...")
+        print("="*50)
         
-        for images, attrs in pbar:
-            batch_size_curr = images.size(0)
-            images = images.to(device)
-            attrs = attrs.to(device)
-            
-            # Метки
-            valid = torch.ones(batch_size_curr, 1).to(device)
-            fake = torch.zeros(batch_size_curr, 1).to(device)
-            
-            # ---------------------
-            # Обучение дискриминатора
-            # ---------------------
-            d_optimizer.zero_grad()
-            
-            # Потеря на реальных изображениях
-            real_validity = discriminator(images, attrs)
-            d_real_loss = adversarial_loss(real_validity, valid)
-            
-            # Генерация фейковых изображений
-            z = torch.randn(batch_size_curr, latent_dim).to(device)
-            fake_images = generator(z, attrs)
-            fake_validity = discriminator(fake_images.detach(), attrs)
-            d_fake_loss = adversarial_loss(fake_validity, fake)
-            
-            # Полная потеря дискриминатора
-            d_loss = (d_real_loss + d_fake_loss) / 2
-            d_loss.backward()
-            d_optimizer.step()
-            
-            # ---------------------
-            # Обучение генератора
-            # ---------------------
-            g_optimizer.zero_grad()
-            
-            # Генерация изображений
-            z = torch.randn(batch_size_curr, latent_dim).to(device)
-            generated_images = generator(z, attrs)
-            
-            # Adversarial loss для генератора
-            gen_validity = discriminator(generated_images, attrs)
-            g_loss = adversarial_loss(gen_validity, valid)
-            
-            g_loss.backward()
-            g_optimizer.step()
-            
-            epoch_g_loss += g_loss.item()
-            epoch_d_loss += d_loss.item()
-            
-            pbar.set_postfix({
-                'G_loss': f'{g_loss.item():.4f}',
-                'D_loss': f'{d_loss.item():.4f}'
-            })
+        best_val_loss = float('inf')
         
-        avg_g_loss = epoch_g_loss / len(dataloader)
-        avg_d_loss = epoch_d_loss / len(dataloader)
-        
-        print(f"Epoch {epoch+1}: G_loss={avg_g_loss:.4f}, D_loss={avg_d_loss:.4f}")
-        
-        # Сохранение модели каждые 5 эпох
-        if (epoch + 1) % 5 == 0:
-            torch.save({
-                'generator_state_dict': generator.state_dict(),
-                'discriminator_state_dict': discriminator.state_dict(),
-                'epoch': epoch,
-                'g_loss': avg_g_loss,
-                'latent_dim': latent_dim,
-                'n_attributes': n_attributes,
-                'img_size': img_size
-            }, f'models/generator_epoch_{epoch+1}.pt')
+        for epoch in range(epochs):
+            # Обучение
+            model.train()
+            train_loss = 0.0
+            train_batches = 0
             
-            # Генерация примеров
-            generate_samples(generator, epoch + 1, device, n_attributes)
-    
-    # Сохранение финальной модели
-    torch.save({
-        'generator_state_dict': generator.state_dict(),
-        'discriminator_state_dict': discriminator.state_dict(),
-        'latent_dim': latent_dim,
-        'n_attributes': n_attributes,
-        'img_size': img_size
-    }, 'models/avatar_generator_final.pt')
-    
-    print("\nОбучение завершено! Модель сохранена.")
-    
-    return generator
-
-def generate_samples(generator, epoch, device, n_attributes):
-    """Генерация примеров для мониторинга"""
-    generator.eval()
-    
-    fig, axes = plt.subplots(4, 4, figsize=(12, 12))
-    
-    with torch.no_grad():
-        for i in range(4):
-            for j in range(4):
-                # Создаем случайные атрибуты
-                attrs = torch.randint(0, 2, (1, n_attributes)).float().to(device)
-                z = torch.randn(1, 100).to(device)
-                generated = generator(z, attrs)
+            for batch_idx, (audio, visual) in enumerate(train_loader):
+                audio = audio.to(self.device)
+                visual = visual.to(self.device)
                 
-                img = generated.squeeze(0).cpu().numpy()
-                img = (img.transpose(1, 2, 0) + 1) / 2
-                img = np.clip(img, 0, 1)
+                optimizer.zero_grad()
+                output = model(audio)
+                loss = criterion(output, visual)
+                loss.backward()
                 
-                axes[i, j].imshow(img)
-                axes[i, j].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(f'generated_samples/epoch_{epoch}.png', dpi=100)
-    plt.close()
+                # Градиентное клиппинг
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                optimizer.step()
+                
+                train_loss += loss.item()
+                train_batches += 1
+                
+                if batch_idx % 10 == 0 and batch_idx > 0:
+                    print(f"   Batch [{batch_idx}/{len(train_loader)}] Loss: {loss.item():.4f}")
+            
+            avg_train_loss = train_loss / max(train_batches, 1)
+            train_losses.append(avg_train_loss)
+            
+            # Валидация
+            model.eval()
+            val_loss = 0.0
+            val_batches = 0
+            
+            with torch.no_grad():
+                for audio, visual in val_loader:
+                    audio = audio.to(self.device)
+                    visual = visual.to(self.device)
+                    output = model(audio)
+                    loss = criterion(output, visual)
+                    val_loss += loss.item()
+                    val_batches += 1
+            
+            avg_val_loss = val_loss / max(val_batches, 1)
+            val_losses.append(avg_val_loss)
+            
+            # Сохраняем лучшую модель
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                self.save_model(model, 'best_model.pth')
+                print(f"   ✨ Новая лучшая модель! Val Loss: {avg_val_loss:.4f}")
+            
+            scheduler.step(avg_val_loss)
+            
+            # Вывод каждую эпоху
+            print(f"\n📈 Epoch [{epoch+1}/{epochs}]")
+            print(f"   Train Loss: {avg_train_loss:.4f}")
+            print(f"   Val Loss: {avg_val_loss:.4f}")
+            print(f"   Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
+            print("-" * 50)
+        
+        print("\n✅ Обучение завершено!")
+        print(f"   Лучшая валидационная loss: {best_val_loss:.4f}")
+        
+        # Визуализация
+        self.plot_losses(train_losses, val_losses)
+        self.plot_training_curves(train_losses, val_losses)
 
-def generate_avatar(attributes, model_path='models/avatar_generator_final.pt', device='cuda'):
-    """Генерация аватара на основе атрибутов"""
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        return model
     
-    if not os.path.exists(model_path):
-        print(f"Модель не найдена: {model_path}")
-        print("Сначала обучите модель с помощью train_model()")
-        return None
+    def plot_losses(self, train_losses, val_losses):
+        """Визуализация потерь"""
+        if len(train_losses) == 0:
+            print("Нет данных для визуализации")
+            return
+            
+        plt.figure(figsize=(12, 5))
+        
+        plt.subplot(1, 2, 1)
+        plt.plot(train_losses, label='Train Loss', linewidth=2, color='blue')
+        plt.plot(val_losses, label='Validation Loss', linewidth=2, color='red')
+        plt.title('Кривые обучения модели', fontsize=14, fontweight='bold')
+        plt.xlabel('Эпоха', fontsize=12)
+        plt.ylabel('Loss (MSE)', fontsize=12)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(1, 2, 2)
+        plt.semilogy(train_losses, label='Train Loss', linewidth=2, color='blue')
+        plt.semilogy(val_losses, label='Validation Loss', linewidth=2, color='red')
+        plt.title('Кривые обучения (логарифмическая шкала)', fontsize=14, fontweight='bold')
+        plt.xlabel('Эпоха', fontsize=12)
+        plt.ylabel('Loss (log scale)', fontsize=12)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(self.data_dir / 'training_curves.png', dpi=100)
+        plt.show()
+        
+        print(f"\n📊 Графики сохранены: {self.data_dir / 'training_curves.png'}")
+        
+    def plot_training_curves(self, train_losses, val_losses):
+        """Построение графика обучения"""
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Основной график
+        axes[0].plot(train_losses, label='Train Loss', linewidth=2, color='blue')
+        axes[0].plot(val_losses, label='Validation Loss', linewidth=2, color='red')
+        axes[0].set_xlabel('Epoch', fontsize=12)
+        axes[0].set_ylabel('Loss (MSE)', fontsize=12)
+        axes[0].set_title('Кривые обучения модели', fontsize=14, fontweight='bold')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        
+        # Логарифмическая шкала
+        axes[1].semilogy(train_losses, label='Train Loss', linewidth=2, color='blue')
+        axes[1].semilogy(val_losses, label='Validation Loss', linewidth=2, color='red')
+        axes[1].set_xlabel('Epoch', fontsize=12)
+        axes[1].set_ylabel('Loss (log scale)', fontsize=12)
+        axes[1].set_title('Кривые обучения (логарифмическая шкала)', fontsize=14, fontweight='bold')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        
+        # Добавляем информацию о лучших значениях
+        best_val_epoch = np.argmin(val_losses)
+        best_val_loss = min(val_losses)
+        axes[0].axvline(x=best_val_epoch, color='green', linestyle='--', alpha=0.5)
+        axes[0].text(best_val_epoch, best_val_loss * 1.1, 
+                    f'Best: {best_val_loss:.4f}', ha='center')
+        
+        plt.tight_layout()
+        plt.savefig(self.models_dir / 'training_curves.png', dpi=150, bbox_inches='tight')
+        plt.show()
+        print(f"\n📊 График обучения сохранен: {self.models_dir / 'training_curves.png'}")
+        
+        # Сохраняем значения потерь
+        losses_data = {
+            'train_losses': train_losses,
+            'val_losses': val_losses,
+            'best_val_loss': best_val_loss,
+            'best_val_epoch': best_val_epoch
+        }
+        
+        with open(self.models_dir / 'losses.json', 'w') as f:
+            json.dump(losses_data, f)
+        print(f"📊 Значения потерь сохранены: {self.models_dir / 'losses.json'}")
+
+    def save_model(self, model, path='model.pth'):
+        """Сохранение модели"""
+        model_path = self.data_dir / path
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'model_config': {
+                'input_dim': 13,
+                'hidden_dim': 128,
+                'output_dim': 136
+            }
+        }, model_path)
+        print(f"💾 Модель сохранена: {model_path}")
+        
+        return model_path
     
-    # Загрузка модели
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    def load_model(self, model, path='best_model.pth'):
+        """Загрузка модели"""
+        model_path = self.data_dir / path
+        if model_path.exists():
+            checkpoint = torch.load(model_path, map_location=self.device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"📦 Модель загружена из {model_path}")
+            return True
+        else:
+            print(f"⚠️ Модель не найдена: {model_path}")
+            return False
     
-    # Создание генератора
-    latent_dim = checkpoint.get('latent_dim', 100)
-    n_attributes = checkpoint.get('n_attributes', 40)
-    img_size = checkpoint.get('img_size', 128)
+    def evaluate_model(self, model, test_loader):
+        """Оценка модели на тестовых данных"""
+        if len(test_loader) == 0:
+            print("Нет данных для оценки")
+            return float('inf')
+            
+        model.eval()
+        total_loss = 0.0
+        total_samples = 0
+        criterion = nn.MSELoss()
+        
+        with torch.no_grad():
+            for audio, visual in test_loader:
+                audio = audio.to(self.device)
+                visual = visual.to(self.device)
+                output = model(audio)
+                loss = criterion(output, visual)
+                total_loss += loss.item() * audio.size(0)
+                total_samples += audio.size(0)
+        
+        avg_loss = total_loss / total_samples if total_samples > 0 else float('inf')
+        rmse = np.sqrt(avg_loss)
+        
+        print(f"\n📊 Оценка модели:")
+        print(f"   Средняя loss на тесте: {avg_loss:.4f}")
+        print(f"   RMSE: {rmse:.4f}")
+        print(f"   Протестировано образцов: {total_samples}")
+        
+        return avg_loss
+
+def test_model_forward():
+    """Тестирование forward pass модели"""
+    print("\n🔧 Тестирование модели...")
+    model = LipSyncModel()
     
-    generator = Generator(latent_dim, n_attributes, img_size).to(device)
-    generator.load_state_dict(checkpoint['generator_state_dict'])
-    generator.eval()
+    # Создаем тестовый батч
+    batch_size = 2
+    time_steps = 50
+    features = 13
     
-    # Подготовка атрибутов
-    attrs_tensor = torch.FloatTensor(attributes).unsqueeze(0).to(device)
+    test_input = torch.randn(batch_size, time_steps, features)
+    print(f"Тестовый вход: {test_input.shape}")
     
-    with torch.no_grad():
-        z = torch.randn(1, latent_dim).to(device)
-        generated = generator(z, attrs_tensor)
+    output = model(test_input)
+    print(f"Выход модели: {output.shape}")
+    print(f"Ожидаемый выход: ({batch_size}, 136)")
     
-    # Преобразование в изображение
-    generated = generated.squeeze(0).cpu().numpy()
-    generated = (generated.transpose(1, 2, 0) + 1) / 2
-    generated = np.clip(generated * 255, 0, 255).astype(np.uint8)
-    
-    return generated
+    if output.shape == (batch_size, 136):
+        print("✅ Forward pass успешен!")
+        return True
+    else:
+        print("❌ Forward pass не прошел проверку размерностей")
+        return False
 
 if __name__ == "__main__":
-    train_model()
+    print("🚀 Запуск обучения модели...")
+    
+    # Тестирование модели
+    if not test_model_forward():
+        print("Остановка из-за ошибки в forward pass")
+        exit(1)
+    
+    trainer = ModelTrainer()
+    samples = trainer.load_data()
+    
+    if samples:
+        train_loader, val_loader = trainer.prepare_dataloaders(samples, batch_size=8)
+        
+        if train_loader and val_loader and len(train_loader) > 0 and len(val_loader) > 0:
+            model = LipSyncModel().to(trainer.device)
+            print(f"\n📐 Архитектура модели:")
+            print(f"   Входной размер: 13 MFCC коэффициентов")
+            print(f"   Скрытое состояние LSTM: 128")
+            print(f"   Выходной размер: 136 (68 точек × 2 координаты)")
+            print(f"   Количество параметров: {sum(p.numel() for p in model.parameters()):,}")
+            
+            # Обучение
+            trained_model = trainer.train_model(model, train_loader, val_loader, epochs=30)
+            
+            # Сохраняем финальную модель
+            trainer.save_model(trained_model, 'final_model.pth')
+            
+            # Оценка
+            trainer.evaluate_model(trained_model, val_loader)
+            
+            print("\n🎉 Обучение успешно завершено!")
+        else:
+            print("❌ Не удалось подготовить даталоадеры")
+            if train_loader:
+                print(f"   Количество батчей в train_loader: {len(train_loader)}")
+            if val_loader:
+                print(f"   Количество батчей в val_loader: {len(val_loader)}")
+    else:
+        print("❌ Нет данных для обучения. Сначала запустите data_preparation.py")
