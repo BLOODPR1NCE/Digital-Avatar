@@ -1,5 +1,4 @@
 # query_optimization.py
-import psycopg2
 import pandas as pd
 import time
 from sqlalchemy import create_engine, text

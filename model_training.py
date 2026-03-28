@@ -1,3 +1,4 @@
+# model_training.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -25,7 +26,6 @@ class LipSyncDataset(Dataset):
         return audio, visual_flat
 
 def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Функция паддинга для батчей разной длины"""
     audio_list, visual_list = zip(*batch)
     
     max_len = max(a.shape[0] for a in audio_list)
@@ -78,11 +78,7 @@ class ModelTrainer:
         print(f"Используется устройство: {self.device}")
         
     def load_data(self) -> Optional[List[Dict]]:
-        """Загрузка подготовленных данных"""
         data_path = self.data_dir / 'processed_data.json'
-        if not data_path.exists():
-            print(f"❌ Файл данных не найден: {data_path}")
-            return None
         
         with open(data_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -90,9 +86,7 @@ class ModelTrainer:
         print(f"✅ Загружено {len(data['samples'])} образцов")
         return data['samples']
     
-    def prepare_dataloaders(self, samples: List[Dict], batch_size: int = 8, 
-                           train_split: float = 0.8) -> Tuple[Optional[DataLoader], Optional[DataLoader]]:
-        """Подготовка даталоадеров"""
+    def prepare_dataloaders(self, samples: List[Dict], batch_size: int = 8, train_split: float = 0.8) -> Tuple[Optional[DataLoader], Optional[DataLoader]]:
         if not samples:
             return None, None
         
@@ -100,23 +94,18 @@ class ModelTrainer:
         train_dataset = LipSyncDataset(samples[:train_size])
         val_dataset = LipSyncDataset(samples[train_size:])
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                  collate_fn=collate_fn, drop_last=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                                collate_fn=collate_fn, drop_last=True)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, drop_last=True)
         
         print(f"   Обучающая выборка: {len(train_dataset)} образцов")
         print(f"   Валидационная выборка: {len(val_dataset)} образцов")
         
         return train_loader, val_loader
     
-    def train_model(self, model: nn.Module, train_loader: DataLoader, 
-                   val_loader: DataLoader, epochs: int = 30) -> nn.Module:
-        """Обучение модели"""
+    def train_model(self, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 30) -> nn.Module:
         criterion = nn.MSELoss()
         optimizer = optim.Adam(model.parameters(), lr=0.001)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
-                                                          patience=5, factor=0.5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
         
         train_losses, val_losses = [], []
         best_val_loss = float('inf')
@@ -146,9 +135,7 @@ class ModelTrainer:
         
         return model
     
-    def _train_epoch(self, model: nn.Module, loader: DataLoader, 
-                     criterion: nn.Module, optimizer: optim.Optimizer) -> float:
-        """Обучение одной эпохи"""
+    def _train_epoch(self, model: nn.Module, loader: DataLoader, criterion: nn.Module, optimizer: optim.Optimizer) -> float:
         model.train()
         total_loss = 0.0
         
@@ -166,9 +153,7 @@ class ModelTrainer:
         
         return total_loss / len(loader)
     
-    def _validate_epoch(self, model: nn.Module, loader: DataLoader, 
-                        criterion: nn.Module) -> float:
-        """Валидация одной эпохи"""
+    def _validate_epoch(self, model: nn.Module, loader: DataLoader, criterion: nn.Module) -> float:
         model.eval()
         total_loss = 0.0
         
@@ -181,7 +166,6 @@ class ModelTrainer:
         return total_loss / len(loader)
     
     def _plot_training_curves(self, train_losses: List[float], val_losses: List[float]):
-        """Построение графиков обучения"""
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
         
         axes[0].plot(train_losses, label='Train Loss', linewidth=2, color='blue')
@@ -210,13 +194,10 @@ class ModelTrainer:
         plt.show()
         print(f"📊 График обучения сохранен: {self.models_dir / 'training_curves.png'}")
         
-        # Сохранение значений потерь
         with open(self.models_dir / 'losses.json', 'w') as f:
-            json.dump({'train_losses': train_losses, 'val_losses': val_losses,
-                      'best_val_loss': best_loss, 'best_val_epoch': int(best_epoch)}, f)
+            json.dump({'train_losses': train_losses, 'val_losses': val_losses, 'best_val_loss': best_loss, 'best_val_epoch': int(best_epoch)}, f)
 
     def save_model(self, model: nn.Module, path: str = 'model.pth') -> Path:
-        """Сохранение модели"""
         model_path = self.data_dir / path
         torch.save({
             'model_state_dict': model.state_dict(),
@@ -226,7 +207,6 @@ class ModelTrainer:
         return model_path
     
     def load_model(self, model: nn.Module, path: str = 'best_model.pth') -> bool:
-        """Загрузка модели"""
         model_path = self.data_dir / path
         if model_path.exists():
             checkpoint = torch.load(model_path, map_location=self.device)

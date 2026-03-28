@@ -1,9 +1,6 @@
 # db_extractor.py
-import psycopg2
 import pandas as pd
-import numpy as np
 from pathlib import Path
-import json
 import time
 from sqlalchemy import create_engine
 import warnings

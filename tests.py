@@ -1,19 +1,16 @@
+# tests.py
 import unittest
 import cv2
 import numpy as np
 import torch
 import tempfile
 import os
-from typing import Optional
 
-class TestDataPreparation(unittest.TestCase):
-    """Тесты для модуля подготовки данных"""
-    
+class TestDataPreparation(unittest.TestCase): 
     def test_audio_features_extraction(self):
         from data_preparation import DataPreparation
         
-        # Создание тестового аудио
-        sample_rate, duration = 16000, 1
+        sample_rate, duration = 16000, 1 # тестовое аудио
         t = np.linspace(0, duration, int(sample_rate * duration))
         test_audio = 0.5 * np.sin(2 * np.pi * 440 * t)
         
@@ -52,8 +49,6 @@ class TestDataPreparation(unittest.TestCase):
 
 
 class TestModelTraining(unittest.TestCase):
-    """Тесты для модуля обучения модели"""
-    
     def test_dataset_loading(self):
         from model_training import LipSyncDataset
         
@@ -74,12 +69,10 @@ class TestModelTraining(unittest.TestCase):
 
 
 class TestFaceAnimation(unittest.TestCase):
-    """Тесты для модуля анимации лица"""
-    
     def test_audio_energy_extraction(self):
         from api import DigitalAvatarService
         
-        sample_rate, duration = 16000, 2
+        sample_rate, duration = 16000, 2 # тестовое аудио
         t = np.linspace(0, duration, int(sample_rate * duration))
         test_audio = 0.5 * np.sin(2 * np.pi * 440 * t)
         
@@ -120,8 +113,6 @@ class TestFaceAnimation(unittest.TestCase):
 
 
 class TestAPI(unittest.TestCase):
-    """Тесты для API"""
-    
     def _check_api_available(self) -> bool:
         import requests
         try:
@@ -131,9 +122,6 @@ class TestAPI(unittest.TestCase):
             return False
     
     def test_api_health(self):
-        if not self._check_api_available():
-            self.skipTest("API сервер не запущен")
-        
         import requests
         response = requests.get("http://localhost:8000/health", timeout=5)
         self.assertEqual(response.status_code, 200)
@@ -143,9 +131,6 @@ class TestAPI(unittest.TestCase):
         print(f"✅ API доступен: {data.get('status')}")
     
     def test_root_endpoint(self):
-        if not self._check_api_available():
-            self.skipTest("API сервер не запущен")
-        
         import requests
         response = requests.get("http://localhost:8000/", timeout=5)
         self.assertEqual(response.status_code, 200)
