@@ -1,4 +1,3 @@
-# data_preparation.py
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
@@ -14,12 +13,9 @@ from typing import Dict, List, Optional
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, (np.integer, np.int64)):
-            return int(obj)
-        if isinstance(obj, (np.floating, np.float64)):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
+        if isinstance(obj, (np.integer, np.int64)): return int(obj)
+        if isinstance(obj, (np.floating, np.float64)): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
         return super().default(obj)
 
 class DataPreparation:
@@ -47,19 +43,15 @@ class DataPreparation:
             print("Распаковка архива...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(self.data_dir)
-            
             zip_path.unlink()
             return True
-            
         except Exception as e:
             print(f"Ошибка при скачивании RAVDESS: {e}")
             return False
 
     def download_shape_predictor(self) -> Optional[str]:
         predictor_path = self.data_dir / "shape_predictor_68_face_landmarks.dat"
-        
-        if predictor_path.exists():
-            return str(predictor_path)
+        if predictor_path.exists(): return str(predictor_path)
         
         print("Скачивание модели для детекции ключевых точек лица...")
         url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
@@ -73,14 +65,12 @@ class DataPreparation:
                 for data in response.iter_content(chunk_size=1024):
                     f.write(data)
             
-            with bz2.BZ2File(bz2_path, 'rb') as source:
-                with open(predictor_path, 'wb') as dest:
-                    dest.write(source.read())
+            with bz2.BZ2File(bz2_path, 'rb') as source, open(predictor_path, 'wb') as dest:
+                dest.write(source.read())
             
             bz2_path.unlink()
             print("✅ Модель загружена")
             return str(predictor_path)
-            
         except Exception as e:
             print(f"Ошибка загрузки модели: {e}")
             return None
@@ -88,7 +78,6 @@ class DataPreparation:
     def extract_audio_features(self, audio_path: str) -> Optional[Dict]:
         try:
             y, sr = librosa.load(audio_path, sr=16000, duration=5.0)
-            
             return {
                 'mfcc': librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, n_fft=400, hop_length=160),
                 'energy': librosa.feature.rms(y=y, frame_length=400, hop_length=160)[0],
@@ -105,49 +94,49 @@ class DataPreparation:
         mfcc = audio_features['mfcc']
         energy = audio_features['energy']
         zcr = audio_features['zcr']
-        
         n_frames = mfcc.shape[1]
         
         energy_norm = np.ones(n_frames) * 0.5
         if len(energy) > 0 and energy.max() > 0:
             energy_norm = energy / energy.max()
-            
         zcr_norm = np.ones(n_frames) * 0.3
         if len(zcr) > 0 and zcr.max() > 0:
             zcr_norm = zcr / zcr.max()
         
         if len(energy) != n_frames and len(energy) > 0:
-            energy_norm = np.interp(np.linspace(0, 1, n_frames), 
-                                    np.linspace(0, 1, len(energy)), energy_norm)
+            energy_norm = np.interp(np.linspace(0, 1, n_frames), np.linspace(0, 1, len(energy)), energy_norm)
         if len(zcr) != n_frames and len(zcr) > 0:
-            zcr_norm = np.interp(np.linspace(0, 1, n_frames), 
-                                 np.linspace(0, 1, len(zcr)), zcr_norm)
+            zcr_norm = np.interp(np.linspace(0, 1, n_frames), np.linspace(0, 1, len(zcr)), zcr_norm)
         
         visual_features = np.zeros((n_frames, 68, 2))
         
         for frame in range(n_frames):
             amplitude = min(0.8, 0.1 + energy_norm[frame] * 0.4 + zcr_norm[frame] * 0.2)
             
-            for i in range(48, 60): #губы внешний
+            # Губы (внешний контур)
+            for i in range(48, 60):
                 angle = (i - 48) / 12 * 2 * np.pi
                 visual_features[frame, i, 0] = 0.5 + np.cos(angle) * 0.12
                 visual_features[frame, i, 1] = 0.6 + np.sin(angle) * (0.05 + amplitude * 0.15)
             
-            for i in range(60, 68): #губы внутренний
+            # Губы (внутренний контур)
+            for i in range(60, 68):
                 angle = (i - 60) / 8 * 2 * np.pi
                 visual_features[frame, i, 0] = 0.5 + np.cos(angle) * 0.08
                 visual_features[frame, i, 1] = 0.6 + np.sin(angle) * (0.03 + amplitude * 0.12)
             
+            # Глаза
             eye_closure = 0.1 + energy_norm[frame] * 0.4
-            for idx, i_val in enumerate(range(36, 42)): #левый глаз, ниже правый
+            for idx, i_val in enumerate(range(36, 42)):
                 visual_features[frame, i_val, 0] = 0.4 + (idx - 3) * 0.03
                 visual_features[frame, i_val, 1] = 0.4 + eye_closure * 0.02
             for idx, i_val in enumerate(range(42, 48)):
                 visual_features[frame, i_val, 0] = 0.6 + (idx - 3) * 0.03
                 visual_features[frame, i_val, 1] = 0.4 + eye_closure * 0.02
             
+            # Брови
             brow_raise = 0.05 + energy_norm[frame] * 0.15
-            for idx, i_val in enumerate(range(17, 22)): #левая бровь, ниже правая
+            for idx, i_val in enumerate(range(17, 22)):
                 visual_features[frame, i_val, 0] = 0.35 + (idx - 2) * 0.05
                 visual_features[frame, i_val, 1] = 0.25 - brow_raise * 0.05
             for idx, i_val in enumerate(range(22, 27)):
@@ -158,26 +147,19 @@ class DataPreparation:
     
     @staticmethod
     def get_emotion_name(code: str) -> str:
-        emotions = {
-            '01': 'neutral', '02': 'calm', '03': 'happy', '04': 'sad',
-            '05': 'angry', '06': 'fearful', '07': 'disgust', '08': 'surprised'
-        }
+        emotions = {'01': 'neutral', '02': 'calm', '03': 'happy', '04': 'sad',
+                   '05': 'angry', '06': 'fearful', '07': 'disgust', '08': 'surprised'}
         return emotions.get(code, 'unknown')
     
     def process_dataset(self, max_samples: Optional[int] = None) -> Optional[Dict]:
-        print("\n" + "="*50)
-        print("ОБРАБОТКА RAVDESS ДАТАСЕТА")
-        print("="*50)
+        print("\n" + "="*50 + "\nОБРАБОТКА RAVDESS ДАТАСЕТА\n" + "="*50)
         
         audio_dir = self._find_audio_directory()
         audio_files = list(Path(audio_dir).rglob("*.wav"))
-        
         max_samples = max_samples or len(audio_files)
         print(f"\n🔄 Обрабатывается {max_samples} файлов...")
         
-        data = []
-        errors = 0
-        
+        data, errors = [], 0
         for audio_path in tqdm(audio_files[:max_samples], desc="Обработка аудио"):
             try:
                 audio_features = self.extract_audio_features(audio_path)
@@ -186,10 +168,8 @@ class DataPreparation:
                     continue
                 
                 visual_features = self.generate_realistic_visual_features(audio_features)
-                
                 metadata = self._extract_metadata(audio_path)
-                metadata['duration'] = audio_features['duration']
-                metadata['sample_rate'] = audio_features['sr']
+                metadata.update({'duration': audio_features['duration'], 'sample_rate': audio_features['sr']})
                 
                 data.append({
                     'audio_path': str(audio_path),
@@ -199,7 +179,6 @@ class DataPreparation:
                     'visual_features': visual_features.tolist(),
                     'metadata': metadata
                 })
-                
             except Exception as e:
                 print(f"\nОшибка при обработке {audio_path.name}: {e}")
                 continue
@@ -229,15 +208,12 @@ class DataPreparation:
         
         print(f"\n✅ Успешно обработано: {len(data)} из {max_samples} файлов")
         print(f"✅ Данные сохранены в {output_path}")
-        
         return processed_data
     
     def _find_audio_directory(self) -> Optional[Path]:
-        possible_dirs = [
-            self.data_dir / "Audio_Speech_Actors_01-24",
-            self.data_dir / "Audio_Speech_Actors_01-24" / "Audio_Speech_Actors_01-24",
-            self.data_dir
-        ]
+        possible_dirs = [self.data_dir / "Audio_Speech_Actors_01-24",
+                        self.data_dir / "Audio_Speech_Actors_01-24" / "Audio_Speech_Actors_01-24",
+                        self.data_dir]
         
         for possible_dir in possible_dirs:
             if possible_dir.exists():
@@ -246,7 +222,6 @@ class DataPreparation:
                     self.download_ravdess()
                 self.download_shape_predictor()
                 return possible_dir
-        
         return None
     
     def _extract_metadata(self, audio_path: Path) -> Dict:
@@ -262,17 +237,10 @@ class DataPreparation:
         else:
             emotion, emotion_code, actor_id, intensity_name = 'unknown', '00', 0, 'normal'
         
-        return {
-            'emotion': emotion,
-            'emotion_code': emotion_code,
-            'actor_id': actor_id,
-            'intensity': intensity_name
-        }
+        return {'emotion': emotion, 'emotion_code': emotion_code, 'actor_id': actor_id, 'intensity': intensity_name}
     
     def _calculate_statistics(self, data: List[Dict]) -> Dict:
-        if not data:
-            return {}
-        
+        if not data: return {}
         durations = [sample['metadata']['duration'] for sample in data]
         return {
             'total_samples': len(data),
@@ -284,9 +252,7 @@ class DataPreparation:
         }
     
     def _summarize_metadata(self, data: List[Dict]) -> Dict:
-        if not data:
-            return {}
-        
+        if not data: return {}
         emotions = [sample['metadata']['emotion'] for sample in data]
         actors = [sample['metadata']['actor_id'] for sample in data]
         intensities = [sample['metadata']['intensity'] for sample in data]
@@ -300,8 +266,7 @@ class DataPreparation:
         }
     
     def create_visualizations(self, data: Optional[Dict] = None) -> bool:
-        if data:
-            self._prepare_dataframe(data)
+        if data: self._prepare_dataframe(data)
         
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         fig.suptitle('Анализ данных RAVDESS датасета', fontsize=16, fontweight='bold')
@@ -314,8 +279,7 @@ class DataPreparation:
         axes[0, 0].set_ylabel('Количество образцов')
         axes[0, 0].tick_params(axis='x', rotation=45)
         for bar, val in zip(bars, emotion_counts.values):
-            axes[0, 0].text(bar.get_x() + bar.get_width()/2., bar.get_height(), 
-                           str(val), ha='center', va='bottom')
+            axes[0, 0].text(bar.get_x() + bar.get_width()/2., bar.get_height(), str(val), ha='center', va='bottom')
         
         # Распределение длительности
         axes[0, 1].hist(self.df['duration'], bins=30, color='steelblue', alpha=0.7, edgecolor='black')
@@ -341,7 +305,6 @@ class DataPreparation:
         plt.savefig('data_analysis_plots.png', dpi=300, bbox_inches='tight')
         plt.show()
         print("✅ Графики сохранены в 'data_analysis_plots.png'")
-        
         return True
     
     def _prepare_dataframe(self, data: Dict):
@@ -357,12 +320,10 @@ class DataPreparation:
             })
         self.df = pd.DataFrame(records)
 
-
 if __name__ == "__main__":
     print("🚀 Запуск обработки реального RAVDESS датасета...")
     prep = DataPreparation()
     processed_data = prep.process_dataset()
-    
     if processed_data:
         print("\n✅ Обработка реальных данных завершена успешно!")
         prep.create_visualizations(processed_data)

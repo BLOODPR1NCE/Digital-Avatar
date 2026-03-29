@@ -17,7 +17,6 @@ import warnings
 warnings.filterwarnings('ignore')
 
 app = FastAPI(title="DigitalAvatar API", description="API для анимации лица")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

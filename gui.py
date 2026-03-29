@@ -22,11 +22,9 @@ class DigitalAvatarGUI:
         self.api_url = "http://localhost:8000"
         
         self.setup_ui()
-        self.center_window()
     
     def setup_ui(self):
         tk.Label(self.root, text="🎭 DigitalAvatar", font=("Arial", 28, "bold"), bg='#f0f0f0', fg='#333').pack(pady=20)
-        tk.Label(self.root, text="Создайте анимированный аватар по фото и голосу", font=("Arial", 12), bg='#f0f0f0', fg='#666').pack(pady=5)
         ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10, padx=20)
         
         btn_frame = tk.Frame(self.root, bg='#f0f0f0')
@@ -50,10 +48,6 @@ class DigitalAvatarGUI:
         gen_frame.pack(pady=20)
         self.generate_btn = self._create_button(gen_frame, "🎬 3. СОЗДАТЬ АНИМАЦИЮ 🎬", self.generate_animation, '#FF9800',  width=35, height=3, state=tk.DISABLED)
         
-        tk.Button(gen_frame, text="🗑 Очистить всё", command=self.clear_all,
-                 width=20, height=1, bg='#f44336', fg='white', font=("Arial", 10),
-                 cursor='hand2').pack(pady=5)
-        
     
     def _create_button(self, parent, text, command, color, width=20, height=2, state=tk.NORMAL):
         btn = tk.Button(parent, text=text, command=command, width=width, height=height,
@@ -66,12 +60,6 @@ class DigitalAvatarGUI:
         label = tk.Label(parent, text=text, font=("Arial", 10), bg='#f0f0f0', fg='gray', pady=5)
         label.pack(anchor='w', padx=10)
         return label
-    
-    def center_window(self):
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 800) // 2
-        y = (self.root.winfo_screenheight() - 650) // 2
-        self.root.geometry(f'800x650+{x}+{y}')
     
     def load_photo(self):
         file_path = filedialog.askopenfilename(title="Выберите фото", 
@@ -105,16 +93,7 @@ class DigitalAvatarGUI:
             self.generate_btn.config(state=tk.NORMAL)
         else:
             self.generate_btn.config(state=tk.DISABLED)
-    
-    def clear_all(self):
-        self.photo_path = None
-        self.audio_path = None
-        self.photo_label.config(text="📷 Фото: не загружено", fg="gray")
-        self.audio_label.config(text="🎵 Аудио: не загружено", fg="gray")
-        self.image_label.config(image='', text="Загрузите фото для предпросмотра")
-        self.image_label.image = None
-        self.generate_btn.config(state=tk.DISABLED)
-    
+
     def generate_animation(self):
         threading.Thread(target=self._generate_animation_thread, daemon=True).start()
     
@@ -143,8 +122,6 @@ class DigitalAvatarGUI:
                         f.write(gif_data)
                         temp_path = f.name
                     
-                    self._show_gif(temp_path)
-                    
                     if messagebox.askyesno("Успех", "Анимация создана!\nСохранить файл?"):
                         save_path = filedialog.asksaveasfilename(defaultextension=".gif",
                                                                  filetypes=[("GIF files", "*.gif")],
@@ -165,19 +142,6 @@ class DigitalAvatarGUI:
             messagebox.showerror("Ошибка", f"Не удалось создать анимацию:\n{str(e)}")
         finally:
             self.check_ready()
-    
-    def _show_gif(self, gif_path):
-        try:
-            gif = Image.open(gif_path)
-            frame = gif.copy()
-            frame.thumbnail((400, 300), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(frame)
-            self.image_label.config(image=photo, text="")
-            self.image_label.image = photo
-        except Exception as e:
-            print(f"Ошибка отображения GIF: {e}")
-            self.image_label.config(text="Ошибка отображения анимации")
-
 
 if __name__ == "__main__":
     root = tk.Tk()
