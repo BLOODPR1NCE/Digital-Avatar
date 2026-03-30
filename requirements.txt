@@ -18,5 +18,4 @@ librosa
 soundfile 
 imageio 
 datasets 
-sqlalchemy 
-seaborn 
+sqlalchemy

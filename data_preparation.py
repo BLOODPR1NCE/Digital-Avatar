@@ -32,13 +32,10 @@ class DataPreparation:
         try:
             response = requests.get(ravdess_url, stream=True, timeout=60)
             response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
             
             with open(zip_path, 'wb') as f:
-                with tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as pbar:
                     for data in response.iter_content(chunk_size=1024*1024):
                         f.write(data)
-                        pbar.update(len(data))
             
             print("Распаковка архива...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -271,7 +268,6 @@ class DataPreparation:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         fig.suptitle('Анализ данных RAVDESS датасета', fontsize=16, fontweight='bold')
         
-        # Распределение эмоций
         emotion_counts = self.df['emotion'].value_counts()
         bars = axes[0, 0].bar(emotion_counts.index, emotion_counts.values, color=plt.cm.Set3(range(len(emotion_counts))), edgecolor='black')
         axes[0, 0].set_title('Распределение по эмоциям', fontweight='bold')
@@ -281,22 +277,17 @@ class DataPreparation:
         for bar, val in zip(bars, emotion_counts.values):
             axes[0, 0].text(bar.get_x() + bar.get_width()/2., bar.get_height(), str(val), ha='center', va='bottom')
         
-        # Распределение длительности
         axes[0, 1].hist(self.df['duration'], bins=30, color='steelblue', alpha=0.7, edgecolor='black')
-        axes[0, 1].axvline(self.df['duration'].mean(), color='red', linestyle='--', label=f'Среднее: {self.df["duration"].mean():.2f} сек')
-        axes[0, 1].axvline(self.df['duration'].median(), color='green', linestyle='--', label=f'Медиана: {self.df["duration"].median():.2f} сек')
         axes[0, 1].set_title('Распределение длительности аудио', fontweight='bold')
         axes[0, 1].set_xlabel('Длительность (секунды)')
         axes[0, 1].set_ylabel('Частота')
         axes[0, 1].legend()
         
-        # Средние значения MFCC по эмоциям
         mfcc_by_emotion = self.df.groupby('emotion')['mfcc_mean'].mean().sort_values()
         axes[1, 0].barh(mfcc_by_emotion.index, mfcc_by_emotion.values, color='coral', edgecolor='black')
         axes[1, 0].set_title('Средние значения MFCC по эмоциям', fontweight='bold')
         axes[1, 0].set_xlabel('Среднее значение MFCC')
         
-        # Корреляционная матрица
         corr_matrix = self.df[['duration', 'mfcc_mean', 'mfcc_std', 'actor_id']].corr()
         sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm', center=0, square=True, linewidths=1, ax=axes[1, 1])
         axes[1, 1].set_title('Тепловая карта корреляций', fontweight='bold')
