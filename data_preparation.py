@@ -3,13 +3,9 @@ import numpy as np
 import pandas as pd
 import json
 from pathlib import Path
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
-import requests
-import zipfile
 import librosa
 import seaborn as sns
-from typing import Dict, List, Optional
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -23,71 +19,19 @@ class DataPreparation:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
         self.df = None
-        
-    def download_ravdess(self) -> bool:
-        print("Скачивание RAVDESS датасета...")
-        ravdess_url = "https://zenodo.org/record/1188976/files/Audio_Speech_Actors_01-24.zip"
-        zip_path = self.data_dir / "ravdess_audio.zip"
-        
-        try:
-            response = requests.get(ravdess_url, stream=True, timeout=60)
-            response.raise_for_status()
-            
-            with open(zip_path, 'wb') as f:
-                    for data in response.iter_content(chunk_size=1024*1024):
-                        f.write(data)
-            
-            print("Распаковка архива...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(self.data_dir)
-            zip_path.unlink()
-            return True
-        except Exception as e:
-            print(f"Ошибка при скачивании RAVDESS: {e}")
-            return False
-
-    def download_shape_predictor(self) -> Optional[str]:
-        predictor_path = self.data_dir / "shape_predictor_68_face_landmarks.dat"
-        if predictor_path.exists(): return str(predictor_path)
-        
-        print("Скачивание модели для детекции ключевых точек лица...")
-        url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
-        
-        try:
-            import bz2
-            response = requests.get(url, stream=True)
-            bz2_path = predictor_path.with_suffix('.dat.bz2')
-            
-            with open(bz2_path, 'wb') as f:
-                for data in response.iter_content(chunk_size=1024):
-                    f.write(data)
-            
-            with bz2.BZ2File(bz2_path, 'rb') as source, open(predictor_path, 'wb') as dest:
-                dest.write(source.read())
-            
-            bz2_path.unlink()
-            print("✅ Модель загружена")
-            return str(predictor_path)
-        except Exception as e:
-            print(f"Ошибка загрузки модели: {e}")
-            return None
     
-    def extract_audio_features(self, audio_path: str) -> Optional[Dict]:
-        try:
-            y, sr = librosa.load(audio_path, sr=16000, duration=5.0)
-            return {
-                'mfcc': librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, n_fft=400, hop_length=160),
-                'energy': librosa.feature.rms(y=y, frame_length=400, hop_length=160)[0],
-                'zcr': librosa.feature.zero_crossing_rate(y, frame_length=400, hop_length=160)[0],
-                'sr': sr,
-                'duration': len(y) / sr,
-                'audio': y
-            }
-        except Exception as e:
-            print(f"Ошибка извлечения признаков: {e}")
-            return None
+    def extract_audio_features(self, audio_path):
+        y, sr = librosa.load(audio_path, sr=16000, duration=5.0)
+        return {
+            'mfcc': librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, n_fft=400, hop_length=160),
+            'energy': librosa.feature.rms(y=y, frame_length=400, hop_length=160)[0],
+            'zcr': librosa.feature.zero_crossing_rate(y, frame_length=400, hop_length=160)[0],
+            'sr': sr,
+            'duration': len(y) / sr,
+            'audio': y
+        }
     
-    def generate_realistic_visual_features(self, audio_features: Dict) -> np.ndarray:
+    def generate_realistic_visual_features(self, audio_features):
         mfcc = audio_features['mfcc']
         energy = audio_features['energy']
         zcr = audio_features['zcr']
@@ -143,42 +87,38 @@ class DataPreparation:
         return visual_features
     
     @staticmethod
-    def get_emotion_name(code: str) -> str:
+    def get_emotion_name(code):
         emotions = {'01': 'neutral', '02': 'calm', '03': 'happy', '04': 'sad',
                    '05': 'angry', '06': 'fearful', '07': 'disgust', '08': 'surprised'}
         return emotions.get(code, 'unknown')
     
-    def process_dataset(self, max_samples: Optional[int] = None) -> Optional[Dict]:
+    def process_dataset(self, max_samples = None):
         print("\n" + "="*50 + "\nОБРАБОТКА RAVDESS ДАТАСЕТА\n" + "="*50)
         
-        audio_dir = self._find_audio_directory()
+        audio_dir = self.data_dir
         audio_files = list(Path(audio_dir).rglob("*.wav"))
-        max_samples = max_samples or len(audio_files)
+        max_samples = len(audio_files)
         print(f"\n🔄 Обрабатывается {max_samples} файлов...")
         
         data, errors = [], 0
         for audio_path in tqdm(audio_files[:max_samples], desc="Обработка аудио"):
-            try:
-                audio_features = self.extract_audio_features(audio_path)
-                if not audio_features:
-                    errors += 1
-                    continue
-                
-                visual_features = self.generate_realistic_visual_features(audio_features)
-                metadata = self._extract_metadata(audio_path)
-                metadata.update({'duration': audio_features['duration'], 'sample_rate': audio_features['sr']})
-                
-                data.append({
-                    'audio_path': str(audio_path),
-                    'audio_features': audio_features['mfcc'].tolist(),
-                    'audio_energy': audio_features['energy'].tolist(),
-                    'audio_zcr': audio_features['zcr'].tolist(),
-                    'visual_features': visual_features.tolist(),
-                    'metadata': metadata
-                })
-            except Exception as e:
-                print(f"\nОшибка при обработке {audio_path.name}: {e}")
+            audio_features = self.extract_audio_features(audio_path)
+            if not audio_features:
+                errors += 1
                 continue
+                
+            visual_features = self.generate_realistic_visual_features(audio_features)
+            metadata = self._extract_metadata(audio_path)
+            metadata.update({'duration': audio_features['duration'], 'sample_rate': audio_features['sr']})
+            
+            data.append({
+                'audio_path': str(audio_path),
+                'audio_features': audio_features['mfcc'].tolist(),
+                'audio_energy': audio_features['energy'].tolist(),
+                'audio_zcr': audio_features['zcr'].tolist(),
+                'visual_features': visual_features.tolist(),
+                'metadata': metadata
+            })
         
         if not data:
             print("❌ Не удалось обработать ни одного файла")
@@ -207,21 +147,7 @@ class DataPreparation:
         print(f"✅ Данные сохранены в {output_path}")
         return processed_data
     
-    def _find_audio_directory(self) -> Optional[Path]:
-        possible_dirs = [self.data_dir / "Audio_Speech_Actors_01-24",
-                        self.data_dir / "Audio_Speech_Actors_01-24" / "Audio_Speech_Actors_01-24",
-                        self.data_dir]
-        
-        for possible_dir in possible_dirs:
-            if possible_dir.exists():
-                print(f"✅ Найдена директория с данными: {possible_dir}")
-                if not list(possible_dir.rglob("*.wav")):
-                    self.download_ravdess()
-                self.download_shape_predictor()
-                return possible_dir
-        return None
-    
-    def _extract_metadata(self, audio_path: Path) -> Dict:
+    def _extract_metadata(self, audio_path):
         filename = audio_path.stem
         parts = filename.split('-')
         
@@ -236,7 +162,7 @@ class DataPreparation:
         
         return {'emotion': emotion, 'emotion_code': emotion_code, 'actor_id': actor_id, 'intensity': intensity_name}
     
-    def _calculate_statistics(self, data: List[Dict]) -> Dict:
+    def _calculate_statistics(self, data):
         if not data: return {}
         durations = [sample['metadata']['duration'] for sample in data]
         return {
@@ -248,7 +174,7 @@ class DataPreparation:
             'median_duration': float(np.median(durations))
         }
     
-    def _summarize_metadata(self, data: List[Dict]) -> Dict:
+    def _summarize_metadata(self, data):
         if not data: return {}
         emotions = [sample['metadata']['emotion'] for sample in data]
         actors = [sample['metadata']['actor_id'] for sample in data]
@@ -262,7 +188,7 @@ class DataPreparation:
             'intensity_distribution': {i: intensities.count(i) for i in set(intensities)}
         }
     
-    def create_visualizations(self, data: Optional[Dict] = None) -> bool:
+    def create_visualizations(self, data):
         if data: self._prepare_dataframe(data)
         
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -298,7 +224,7 @@ class DataPreparation:
         print("✅ Графики сохранены в 'data_analysis_plots.png'")
         return True
     
-    def _prepare_dataframe(self, data: Dict):
+    def _prepare_dataframe(self, data):
         records = []
         for sample in data['samples']:
             records.append({

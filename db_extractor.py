@@ -1,36 +1,23 @@
 # db_extractor.py
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from pathlib import Path
-import time
 from sqlalchemy import create_engine
 import warnings
 warnings.filterwarnings('ignore')
 
 class PostgresDataExtractor:
-    def __init__(self, host='localhost', port=5432, database='postgres', 
-                 user='postgres', password='postgres'):
-        self.connection_params = {
-            'host': host,
-            'port': port,
-            'database': database,
-            'user': user,
-            'password': password
-        }
-        self.engine = None
-        self.connection = None
+    def __init__(self, host='localhost', port=5432, database='postgres', user='postgres', password='postgres'):
+        self.conn_str = f"postgresql://{user}:{password}@{host}:{port}/{database}"
         self.data_dir = Path("./data")
         self.data_dir.mkdir(exist_ok=True)
+        self.engine = None
         
     def connect(self):
-        try:
-            conn_str = f"postgresql://{self.connection_params['user']}:{self.connection_params['password']}@{self.connection_params['host']}:{self.connection_params['port']}/{self.connection_params['database']}"
-            self.engine = create_engine(conn_str)
-            self.connection = self.engine.connect()
-            print("✅ Успешное подключение к PostgreSQL")
-            return True
-        except Exception as e:
-            print(f"❌ Ошибка подключения: {e}")
-            return False
+        self.engine = create_engine(self.conn_str)
+        print("✅ Успешное подключение к PostgreSQL")
+        return True
     
     def get_table_list(self):
         query = """
@@ -40,7 +27,7 @@ class PostgresDataExtractor:
             ORDER BY table_name;
         """
         try:
-            tables = pd.read_sql(query, self.connection)
+            tables = pd.read_sql(query, self.engine)
             print(f"\n📋 Найденные таблицы:")
             for table in tables['table_name']:
                 print(f"   - {table}")
@@ -49,84 +36,84 @@ class PostgresDataExtractor:
             print(f"Ошибка получения списка таблиц: {e}")
             return []
     
-    def get_table_info(self, table_name):
-        query = f"""
-            SELECT 
-                column_name,
-                data_type,
-                is_nullable,
-                character_maximum_length
-            FROM information_schema.columns
-            WHERE table_name = '{table_name}'
-            ORDER BY ordinal_position;
-        """
-        try:
-            info = pd.read_sql(query, self.connection)
-            return info
-        except Exception as e:
-            print(f"Ошибка получения информации о таблице {table_name}: {e}")
-            return None
-    
-    def extract_table_data(self, table_name, limit=None):
-        query = f"SELECT * FROM {table_name}"
-        if limit:
-            query += f" LIMIT {limit}"
+    def extract_and_save_table(self, table_name):
+        print(f"\n📊 Извлечение таблицы: {table_name}")
+        df = pd.read_sql(f"SELECT * FROM {table_name}", self.engine)
         
-        try:
-            start_time = time.time()
-            df = pd.read_sql(query, self.connection)
-            elapsed_time = time.time() - start_time
+        csv_path = self.data_dir / f"{table_name}.csv"
+        df.to_csv(csv_path, index=False, encoding='utf-8')
             
-            print(f"\n📊 Таблица '{table_name}':")
-            print(f"   - Записей: {len(df)}")
-            print(f"   - Столбцов: {len(df.columns)}")
-            print(f"   - Время загрузки: {elapsed_time:.2f} сек")
-            print(f"   - Размер в памяти: {df.memory_usage(deep=True).sum() / 1024:.2f} KB")
+        print(f"   ✅ Записей: {len(df)}, столбцов: {len(df.columns)}")
+        print(f"   💾 Сохранено в {csv_path}")
             
-            return df
-        except Exception as e:
-            print(f"Ошибка извлечения данных из {table_name}: {e}")
-            return None
+        return df
+    
+    def create_visualizations(self, df, table_name):
+        numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+        
+        # Определяем количество графиков
+        n_cols = len(numeric_cols)
+        n_rows = (len(numeric_cols) + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        fig.suptitle(f'Анализ данных: {table_name}', fontsize=16, fontweight='bold')
+        
+        if n_rows == 1:
+            axes = [axes] if n_cols == 1 else axes
+        else:
+            axes = axes.flatten()
+        
+        for idx, col in enumerate(numeric_cols[:n_rows*n_cols]):
+            ax = axes[idx]
+            
+            # Гистограмма распределения
+            ax.hist(df[col].dropna(), bins=30, color='steelblue', alpha=0.7, edgecolor='black')
+            ax.set_title(f'Распределение: {col}', fontweight='bold')
+            ax.set_xlabel(col)
+            ax.set_ylabel('Частота')
+            ax.legend(fontsize=8)
+        
+        # Скрываем лишние подграфики
+        for idx in range(len(numeric_cols), len(axes)):
+            axes[idx].set_visible(False)
+        
+        plt.tight_layout()
+        plt.savefig(self.data_dir / f'{table_name}_analysis.png', dpi=150, bbox_inches='tight')
+        plt.show()
+        print(f"📊 Графики сохранены в {self.data_dir}/{table_name}_analysis.png")
+        
+        # Корреляционная матрица для числовых колонок (если их больше 1)
+        if len(numeric_cols) > 1:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            corr_matrix = df[numeric_cols].corr()
+            sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm', center=0, square=True, linewidths=1, ax=ax)
+            ax.set_title(f'Корреляционная матрица: {table_name}', fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(self.data_dir / f'{table_name}_correlation.png', dpi=150, bbox_inches='tight')
+            plt.show()
+            print(f"📊 Корреляционная матрица сохранена в {self.data_dir}/{table_name}_correlation.png")
     
     def extract_all_data(self):
-        if not self.connection:
+        if not self.engine:
             if not self.connect():
-                return None
+                return False
         
         tables = self.get_table_list()
-        if not tables:
-            print("Таблицы не найдены")
-            return None
         
         all_data = {}
         
         for table in tables:
-            print(f"\n{'='*50}")
-            print(f"Извлечение данных из таблицы: {table}")
-            print('='*50)
-            
-            table_info = self.get_table_info(table)
-            if table_info is not None:
-                print(f"\nСтруктура таблицы:")
-                print(table_info.to_string(index=False))
-            
-            df = self.extract_table_data(table)
+            df = self.extract_and_save_table(table)
             if df is not None:
                 all_data[table] = df
-                self.save_data(df, table)
+                self.create_visualizations(df, table)
         
-        return all_data, all_stats
-    
-    def save_data(self, df, table_name):
-        csv_path = self.data_dir / f"{table_name}.csv"
-        df.to_csv(csv_path, index=False, encoding='utf-8')
-        print(f"💾 Данные сохранены в {csv_path}")
+        return all_data
     
     def disconnect(self):
-        if self.connection:
-            self.connection.close()
+        if self.engine:
+            self.engine.dispose()
             print("🔌 Соединение с БД закрыто")
-
 
 if __name__ == "__main__":
     print("🚀 Запуск экстрактора данных из PostgreSQL")
@@ -135,7 +122,7 @@ if __name__ == "__main__":
     extractor = PostgresDataExtractor()
     
     if extractor.connect():
-        all_data, all_stats = extractor.extract_all_data()
+        all_data = extractor.extract_all_data()
         
         if all_data:
             print("\n" + "="*50)
@@ -149,4 +136,4 @@ if __name__ == "__main__":
         
         extractor.disconnect()
     else:
-        print("Не удалось подключиться к БД. Проверьте параметры подключения.")
+        print("❌ Не удалось подключиться к БД. Проверьте параметры подключения.")
