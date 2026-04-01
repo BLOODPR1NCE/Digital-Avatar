@@ -1,57 +1,46 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 import requests
 import base64
 import tempfile
 import os
-from PIL import Image, ImageTk
 import threading
 import shutil
-from typing import Optional
 
 class DigitalAvatarGUI:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root):
         self.root = root
         self.root.title("DigitalAvatar - Анимация лица")
-        self.root.geometry("800x650")
-        self.root.configure(bg='#f0f0f0')
-        self.photo_path: Optional[str] = None
-        self.audio_path: Optional[str] = None
+        self.photo_path = None
+        self.audio_path = None
         self.api_url = "http://localhost:8000"
         self.setup_ui()
     
     def setup_ui(self):
-        tk.Label(self.root, text="🎭 DigitalAvatar", font=("Arial", 28, "bold"), bg='#f0f0f0', fg='#333').pack(pady=20)
-        ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10, padx=20)
+        tk.Label(self.root, text="🎭 DigitalAvatar", font=(28)).pack(pady=20)
         
-        btn_frame = tk.Frame(self.root, bg='#f0f0f0')
+        btn_frame = tk.Frame(self.root)
         btn_frame.pack(pady=20)
         self.photo_btn = self._create_button(btn_frame, "📸 1. Загрузить фото", self.load_photo, '#4CAF50')
         self.audio_btn = self._create_button(btn_frame, "🎵 2. Загрузить аудио", self.load_audio, '#2196F3')
         
-        info_frame = tk.Frame(self.root, bg='#f0f0f0', relief=tk.GROOVE, bd=1)
-        info_frame.pack(pady=10, padx=20, fill='x')
+        info_frame = tk.Frame(self.root)
+        info_frame.pack(pady=10)
         self.photo_label = self._create_info_label(info_frame, "📷 Фото: не загружено")
         self.audio_label = self._create_info_label(info_frame, "🎵 Аудио: не загружено")
         
-        preview_frame = tk.Frame(self.root, bg='white', relief=tk.RAISED, bd=2)
-        preview_frame.pack(pady=10, padx=20, fill='both', expand=True)
-        tk.Label(preview_frame, text="Предпросмотр", font=("Arial", 12, "bold"), bg='white').pack(pady=5)
-        self.image_label = tk.Label(preview_frame, bg='#e0e0e0', text="Загрузите фото для предпросмотра", font=("Arial", 10), width=50, height=15, relief=tk.SUNKEN)
-        self.image_label.pack(pady=10, padx=10, fill='both', expand=True)
-        
-        gen_frame = tk.Frame(self.root, bg='#f0f0f0')
+        gen_frame = tk.Frame(self.root)
         gen_frame.pack(pady=20)
-        self.generate_btn = self._create_button(gen_frame, "🎬 3. СОЗДАТЬ АНИМАЦИЮ 🎬", self.generate_animation, '#FF9800', width=35, height=3, state=tk.DISABLED)
+        self.generate_btn = self._create_button(gen_frame, "🎬 3. СОЗДАТЬ АНИМАЦИЮ 🎬", self.generate_animation, '#FF9800', state=tk.DISABLED)
 
-    def _create_button(self, parent, text, command, color, width=20, height=2, state=tk.NORMAL):
-        btn = tk.Button(parent, text=text, command=command, width=width, height=height, bg=color, fg='white', font=("Arial", 11, "bold"), cursor='hand2', state=state)
+    def _create_button(self, parent, text, command, color, state=tk.NORMAL):
+        btn = tk.Button(parent, text=text, command=command, bg=color, fg='white', font=("Arial", 11), state=state)
         btn.pack(side=tk.LEFT, padx=10)
         return btn
     
     def _create_info_label(self, parent, text):
-        label = tk.Label(parent, text=text, font=("Arial", 10), bg='#f0f0f0', fg='gray', pady=5)
-        label.pack(anchor='w', padx=10)
+        label = tk.Label(parent, text=text, font=("Arial", 10), fg='gray')
+        label.pack(padx=10)
         return label
     
     def load_photo(self):
@@ -60,17 +49,6 @@ class DigitalAvatarGUI:
             self.photo_path = file_path
             self.photo_label.config(text=f"📷 Фото: {os.path.basename(file_path)}", fg="green")
             self.check_ready()
-            self._preview_image(file_path)
-    
-    def _preview_image(self, file_path):
-        try:
-            img = Image.open(file_path)
-            img.thumbnail((400, 300), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self.image_label.config(image=photo, text="")
-            self.image_label.image = photo
-        except Exception as e:
-            print(f"Ошибка загрузки фото: {e}")
     
     def load_audio(self):
         file_path = filedialog.askopenfilename(title="Выберите аудиофайл", filetypes=[("Audio files", "*.wav *.mp3")])
@@ -112,6 +90,5 @@ class DigitalAvatarGUI:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    ttk.Style().theme_use('clam')
     app = DigitalAvatarGUI(root)
     root.mainloop()

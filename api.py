@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -11,7 +11,6 @@ from pathlib import Path
 import librosa
 import base64
 import dlib
-from typing import List, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -19,7 +18,7 @@ app = FastAPI(title="DigitalAvatar API", description="API для анимаци�
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class LipSyncModel(torch.nn.Module):
-    def __init__(self, input_dim: int = 13, hidden_dim: int = 128, output_dim: int = 136):
+    def __init__(self, input_dim = 13, hidden_dim = 128, output_dim = 136):
         super().__init__()
         self.input_projection = torch.nn.Linear(input_dim, hidden_dim)
         self.lstm = torch.nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=2, batch_first=True, dropout=0.2, bidirectional=True)
@@ -29,7 +28,7 @@ class LipSyncModel(torch.nn.Module):
         self.dropout = torch.nn.Dropout(0.3)
         self.fc2 = torch.nn.Linear(256, output_dim)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         x = self.input_projection(x)
         lstm_out, _ = self.lstm(x)
         x = self.fc1(lstm_out.mean(dim=1))
@@ -45,11 +44,11 @@ class FaceWarper:
         self.predictor = dlib.shape_predictor(self.predictor_path) if self.predictor_path else None
     
     @staticmethod
-    def _get_predictor_path() -> Optional[str]:
-        possible_paths = ["./data/shape_predictor_68_face_landmarks.dat", "shape_predictor_68_face_landmarks.dat", os.path.expanduser("~/.dlib/shape_predictor_68_face_landmarks.dat")]
-        return next((p for p in possible_paths if os.path.exists(p)), None)
+    def _get_predictor_path():
+        possible_path = "./data/shape_predictor_68_face_landmarks.dat"
+        return possible_path
     
-    def detect_landmarks(self, image: np.ndarray) -> Optional[np.ndarray]:
+    def detect_landmarks(self, image):
         if not self.predictor: return None
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         faces = self.detector(gray)
@@ -57,7 +56,7 @@ class FaceWarper:
         landmarks = self.predictor(gray, faces[0])
         return np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in range(68)])
     
-    def warp_face(self, image: np.ndarray, src_landmarks: np.ndarray, dst_landmarks: np.ndarray) -> np.ndarray:
+    def warp_face(self, image, src_landmarks, dst_landmarks):
         if src_landmarks is None or dst_landmarks is None: return image
         h, w = image.shape[:2]
         grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
@@ -72,10 +71,10 @@ class FaceWarper:
         
         return cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     
-    def interpolate_landmarks(self, landmarks1: np.ndarray, landmarks2: np.ndarray, t: float) -> np.ndarray:
+    def interpolate_landmarks(self, landmarks1, landmarks2, t):
         return landmarks1 * (1 - t) + landmarks2 * t
     
-    def create_lip_animation(self, image: np.ndarray, audio_energy: List[float]) -> List[np.ndarray]:
+    def create_lip_animation(self, image, audio_energy):
         src_landmarks = self.detect_landmarks(image)
         if src_landmarks is None: return [image] * len(audio_energy)
         
@@ -99,23 +98,16 @@ class FaceWarper:
         return frames
 
 class DigitalAvatarService:
-    def __init__(self, model_path: str = "./data/best_model.pth"):
+    def __init__(self, model_path = "./data/best_model.pth"):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = LipSyncModel().to(self.device)
         self.face_warper = FaceWarper()
         
         model_path = Path(model_path)
-        if model_path.exists():
-            try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device)['model_state_dict'])
-                print(f"✅ Модель загружена из {model_path}")
-            except Exception as e:
-                print(f"⚠️ Ошибка загрузки модели: {e}")
-        else:
-            print(f"⚠️ Модель не найдена: {model_path}")
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device)['model_state_dict'])
         self.model.eval()
     
-    def extract_audio_energy(self, audio_path: str) -> List[float]:
+    def extract_audio_energy(self, audio_path):
         try:
             y, sr = librosa.load(audio_path, sr=16000, duration=5.0)
             frame_length, hop_length = int(sr * 0.04), int(sr * 0.02)
@@ -124,7 +116,8 @@ class DigitalAvatarService:
             if energy:
                 energy = np.array(energy)
                 max_energy = energy.max()
-                if max_energy > 0: energy = energy / max_energy
+                if max_energy > 0:
+                    energy = energy / max_energy
                 energy = np.clip(energy, 0.1, 1.0)
                 from scipy.ndimage import gaussian_filter1d
                 energy = gaussian_filter1d(energy, sigma=2)
@@ -136,7 +129,7 @@ class DigitalAvatarService:
             print(f"Ошибка извлечения энергии: {e}")
             return [0.5] * 30
     
-    def generate_animation(self, image_path: str, audio_path: str, output_path: str = "output.gif") -> Optional[str]:
+    def generate_animation(self, image_path, audio_path, output_path= "output.gif"):
         image = cv2.imread(image_path)
         audio_energy = self.extract_audio_energy(audio_path)
         frames = self.face_warper.create_lip_animation(image, audio_energy) or [image] * len(audio_energy)
@@ -157,7 +150,7 @@ async def root():
     return {"message": "DigitalAvatar API", "status": "running", "version": "1.0.0", "endpoints": {"/generate": "POST", "/health": "GET"}}
 
 @app.post("/generate")
-async def generate_animation(photo: UploadFile = File(...), audio: UploadFile = File(...)):
+async def generate_animation(photo = File(...), audio = File(...)):
     temp_files = []
     try:
         img_path, audio_path, output_path = [tempfile.NamedTemporaryFile(delete=False, suffix=s).name for s in [".jpg", ".wav", ".gif"]]
